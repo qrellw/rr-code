@@ -1,0 +1,29 @@
+# Thư mục loại trừ theo yêu cầu
+nogithub/
+NOgithub/
+[nN][oO]github/
+
+# Python cache & artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+*.pyc
+
+# Virtual environments
+venv/
+env/
+ENV/
+.env
+
+# IDE & Editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS temporary files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
