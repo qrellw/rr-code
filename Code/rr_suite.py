@@ -70,6 +70,8 @@ class RRAnalyzerSuite(QMainWindow):
 
         # Buffer cho Live Plotting
         self.max_samples = 1000
+        self.live_count = 0            # số mẫu thật đã nhận trong phiên hiện tại
+        self.live_total = 0            # tổng số mẫu đã nhận (trục X chạy 0 -> vo han)
         self.live_buf_r = np.zeros(self.max_samples)
         self.live_buf_va = np.zeros(self.max_samples)
         self.live_buf_vb = np.zeros(self.max_samples)
@@ -174,7 +176,12 @@ class RRAnalyzerSuite(QMainWindow):
         # Hàng nút lệnh tương tác với firmware
         row2 = QHBoxLayout()
         self.btn_cal_k = QPushButton("Hiệu chuẩn k (c)")
-        self.btn_cal_k.clicked.connect(lambda: self.send_serial_cmd('c'))
+        self.btn_cal_k.setToolTip(
+            "Đo 3 giây tại vị trí tia hiện tại rồi chọn k sao cho r dao động quanh 0.\n"
+            "Giữ yên và thở đều trong lúc hiệu chuẩn.\n"
+            "k được lưu vào bộ nhớ flash, giữ nguyên qua lần khởi động lại."
+        )
+        self.btn_cal_k.clicked.connect(self.on_calibrate_k)
 
         self.btn_toggle_laser = QPushButton("Bật/Tắt Laser (l)")
         self.btn_toggle_laser.clicked.connect(lambda: self.send_serial_cmd('l'))
@@ -257,11 +264,19 @@ class RRAnalyzerSuite(QMainWindow):
         splitter_live = QSplitter(Qt.Orientation.Vertical)
 
         # Đồ thị r (tỉ số vị trí / nhịp thở)
-        self.live_plot_r = pg.PlotWidget(title="Tín hiệu Nhịp thở r = (Va - k*Vb)/(Va + k*Vb)")
+        self.live_plot_r = pg.PlotWidget(title="Tín hiệu Nhịp thở r = (k·Vb - Va)/(Va + k·Vb)   [hít vào ↑ · thở ra ↓]")
         self.live_plot_r.showGrid(x=True, y=True, alpha=0.3)
         self.live_plot_r.setLabel('bottom', "Mẫu (Samples)")
         self.live_plot_r.setLabel('left', "Tỉ số r")
         self.live_plot_r.enableAutoRange(axis='y')
+        # Trục X luôn tự bám theo số mẫu thật (0 -> vô hạn, cuộn theo khung hiển thị).
+        # Nếu để autoscale mặc định, TextItem ở gốc toạ độ sẽ ghim khung nhìn ở 0..1000.
+        self.live_plot_r.setXRange(0, self.max_samples, padding=0)
+        # r có miền xác định cố định [-1, 1] -> khoá trục Y, KHÔNG để autoscale.
+        # Autoscale trước đây bị label_live/vLine_live kéo theo toạ độ chuột, đẩy
+        # trục Y lên hàng trăm, làm đường r (biên độ ~0.02) trông như đường phẳng.
+        self.live_plot_r.disableAutoRange(axis='y')
+        self.live_plot_r.setYRange(-1.0, 1.0, padding=0)
         self.curve_live_r = self.live_plot_r.plot(pen=pg.mkPen('#ff69b4', width=2.0), name="r")
         self.zero_line_r = pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen('#ff69b4', width=1, style=Qt.PenStyle.DashLine))
         self.live_plot_r.addItem(self.zero_line_r)
@@ -358,18 +373,48 @@ class RRAnalyzerSuite(QMainWindow):
             return
         self.serial_thread.send_command(cmd)
 
+    def on_calibrate_k(self):
+        """Hiệu chuẩn k. Firmware đo 3 giây nên chặn luồng đọc một lúc;
+        hiện trạng thái để người dùng biết đang chạy chứ không tưởng bị treo."""
+        if not self.serial_thread.is_running:
+            QMessageBox.information(self, "Chưa kết nối",
+                                    "Vui lòng kết nối với thiết bị trước khi hiệu chuẩn.")
+            return
+        self.btn_cal_k.setEnabled(False)
+        self.btn_cal_k.setText("Đang hiệu chuẩn (3s)...")
+        self.lbl_card_flags.setText("Trạng thái: đang hiệu chuẩn k, giữ yên và thở đều")
+        self.log_diag("[GUI] bắt đầu hiệu chuẩn k — đo 3 giây tại vị trí tia hiện tại")
+        self.serial_thread.send_command('c')
+
+        def _done():
+            self.btn_cal_k.setEnabled(True)
+            self.btn_cal_k.setText("Hiệu chuẩn k (c)")
+            self.lbl_card_flags.setText("Trạng thái: hiệu chuẩn xong")
+
+        QTimer.singleShot(4200, _done)
+
+    def log_diag(self, msg):
+        """Ghi một dòng vào nhật ký phản hồi firmware (nếu đã dựng xong)."""
+        if getattr(self, 'live_log_text', None) is not None:
+            self.live_log_text.append(msg)
+
     def change_window_size(self, size):
         self.max_samples = size
+        self.live_count = 0
+        self.live_total = 0
         self.live_buf_r = np.zeros(self.max_samples)
         self.live_buf_va = np.zeros(self.max_samples)
         self.live_buf_vb = np.zeros(self.max_samples)
         self.live_buf_time = np.zeros(self.max_samples)
+        self.live_plot_r.setXRange(0, self.max_samples, padding=0)
 
     def on_new_live_data(self, d):
         r = d['r']
         if self.cb_invert_live.isChecked():
             r = -r
 
+        # Đẩy mẫu mới vào cuối buffer kiểu FIFO trượt. live_count đếm số mẫu thật
+        # để lúc khởi động chưa có mẫu vẫn không vẽ dãy 0 phẳng trước dữ liệu thật.
         self.live_buf_r[:-1] = self.live_buf_r[1:]
         self.live_buf_r[-1] = r
 
@@ -378,6 +423,9 @@ class RRAnalyzerSuite(QMainWindow):
 
         self.live_buf_vb[:-1] = self.live_buf_vb[1:]
         self.live_buf_vb[-1] = d['vb']
+
+        self.live_count = min(self.live_count + 1, self.max_samples)
+        self.live_total += 1
 
         self.lbl_card_r.setText(f"r: {r:+.4f}")
         self.lbl_card_rr.setText(f"Nhịp thở: {d['rr']:.1f} bpm" if d['rr'] > 0 else "Nhịp thở: Đang tính...")
@@ -406,19 +454,43 @@ class RRAnalyzerSuite(QMainWindow):
 
     def update_live_plot(self):
         if self.serial_thread.is_running:
-            self.curve_live_r.setData(self.live_buf_r)
+            # Chỉ vẽ phần mẫu thật đã nhận (tránh dãy 0 flat lúc mới khởi động)
+            n = self.live_count
+            if n < 2:
+                return
+            # Trục X luôn bắt đầu từ 0 và tăng mãi: hiển thị theo số mẫu tổng
+            # [total-n, total]. Khi total < max_samples thì thấy [0, total].
+            total = self.live_total
+            x = np.arange(total - n, total)
+            self.curve_live_r.setData(x, self.live_buf_r[-n:])
             if self.cb_show_vavb.isChecked():
-                self.curve_live_va.setData(self.live_buf_va)
-                self.curve_live_vb.setData(self.live_buf_vb)
+                self.curve_live_va.setData(x, self.live_buf_va[-n:])
+                self.curve_live_vb.setData(x, self.live_buf_vb[-n:])
+            # Khung nhìn trượt theo cửa sổ hiển thị, không còn vùng trống bên phải
+            self.live_plot_r.setXRange(max(0, total - self.max_samples), total, padding=0)
 
     def mouseMoved_live(self, evt):
         pos = evt[0]
         if self.live_plot_r.sceneBoundingRect().contains(pos):
             mousePoint = self.live_plot_r.plotItem.vb.mapSceneToView(pos)
-            x, y = mousePoint.x(), mousePoint.y()
+            x = mousePoint.x()
+            # Đọc r tại đúng mẫu dưới con trỏ, KHÔNG lấy toạ độ Y của chuột:
+            # nếu lấy Y thì nhãn trôi tới chỗ trống và (khi bật autoscale) kéo
+            # cả khung nhìn theo, làm line r trông phẳng.
+            n = self.live_count
+            total = self.live_total
+            y = None
+            if n > 0:
+                i = int(x) - (total - n)
+                if 0 <= i < n:
+                    y = float(self.live_buf_r[-n:][i])
             self.vLine_live.setPos(x)
-            self.label_live.setHtml(f"Mẫu: {int(x)}<br>r: {y:+.4f}")
-            self.label_live.setPos(x, y)
+            if y is None:
+                self.label_live.setHtml("Mẫu: %d<br>r: --" % int(x))
+            else:
+                self.label_live.setHtml("Mẫu: %d<br>r: %+.4f" % (int(x), y))
+            # Neo nhãn cao hơn đỉnh trục một chút để không chen vào đường r
+            self.label_live.setPos(x, self.live_plot_r.viewRange()[1][1] * 0.88)
 
     # =========================================================================
     # TAB 2: OFFLINE ANALYSIS (PHÂN TÍCH CSV ĐỒNG BỘ RRDATA)
@@ -687,11 +759,12 @@ class RRAnalyzerSuite(QMainWindow):
                         self.cb_channel.addItem(c)
                         added.add(c)
 
-            # Thêm cột tổng hợp Va - Vb nếu có cả Va và Vb
+            # Thêm cột tổng hợp Vb - Va nếu có cả Va và Vb
+            # (Vb lớn hơn Va trên phần lớn dải -> lấy Vb - Va để hiệu quang không âm)
             has_va = any(c.lower() == 'va' for c in df.columns)
             has_vb = any(c.lower() == 'vb' for c in df.columns)
             if has_va and has_vb:
-                self.cb_channel.addItem("Va - Vb (Hiệu quang)")
+                self.cb_channel.addItem("Vb - Va (Hiệu quang)")
 
             # Thêm các cột số còn lại
             for c in df.columns:
@@ -755,10 +828,10 @@ class RRAnalyzerSuite(QMainWindow):
         self.offline_channel = channel_name
         df = self.offline_df
 
-        if channel_name == "Va - Vb (Hiệu quang)":
+        if channel_name == "Vb - Va (Hiệu quang)":
             col_va = next(c for c in df.columns if c.lower() == 'va')
             col_vb = next(c for c in df.columns if c.lower() == 'vb')
-            sig = df[col_va].values.astype(float) - df[col_vb].values.astype(float)
+            sig = df[col_vb].values.astype(float) - df[col_va].values.astype(float)
         else:
             sig = df[channel_name].values.astype(float)
 
@@ -833,9 +906,6 @@ class RRAnalyzerSuite(QMainWindow):
                 QMessageBox.warning(self, "Dữ liệu quá ngắn", "Tín hiệu cần ít nhất 20 mẫu để phân tích FFT.")
             return
 
-        if self.cb_invert_offline.isChecked():
-            signal = -signal
-
         signal_no_dc = signal - np.mean(signal)
 
         # Xác định khoảng chia thời gian dt
@@ -893,9 +963,9 @@ class RRAnalyzerSuite(QMainWindow):
                 QMessageBox.warning(self, "Dữ liệu quá ngắn", "Cần ít nhất 30 mẫu để tìm đỉnh.")
             return
 
-        if self.cb_invert_offline.isChecked():
-            signal = -signal
-
+        # offline_signal đã mang sẵn chiều: hít vào -> đi lên, thở ra -> đi xuống
+        # (redraw_offline_raw()/apply_filter() đã áp dụng "Lật ngược" nếu được tick).
+        # KHÔNG đảo lại ở đây, tránh đảo hai lần làm đỉnh bị gắn ngược chỗ.
         signal_no_dc = signal - np.mean(signal)
         Fs = self.offline_fs
         is_rr = "Nhịp thở" in self.cb_signal_type.currentText() or self.offline_channel.lower() == 'r'
@@ -1943,6 +2013,8 @@ class RRAnalyzerSuite(QMainWindow):
     def reset_live_plot(self):
         """Xóa toàn bộ buffer và đồ thị live để chuẩn bị cho phiên đo mới."""
         # Reset numpy buffers
+        self.live_count = 0
+        self.live_total = 0
         self.live_buf_r  = np.zeros(self.max_samples)
         self.live_buf_va = np.zeros(self.max_samples)
         self.live_buf_vb = np.zeros(self.max_samples)
@@ -1951,6 +2023,7 @@ class RRAnalyzerSuite(QMainWindow):
         self.curve_live_r.setData([])
         self.curve_live_va.setData([])
         self.curve_live_vb.setData([])
+        self.live_plot_r.setXRange(0, self.max_samples, padding=0)
 
         # Reset status cards
         self.lbl_card_r.setText("r (Vị trí): --")

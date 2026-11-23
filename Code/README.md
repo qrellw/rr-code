@@ -35,7 +35,7 @@ python ppg_suite.py
 
 2. **Offline Analysis (Phân tích ngoại tuyến):**
    - Mở và phân tích trực tiếp các file CSV trong `rrdata/` (`rr_1_*.csv`) hoặc định dạng PPG cũ.
-   - Cho phép chọn kênh phân tích: `r`, `Va`, `Vb`, `Va - Vb (Hiệu quang)`, `rr`.
+   - Cho phép chọn kênh phân tích: `r`, `Va`, `Vb`, `Vb - Va (Hiệu quang)`, `rr`.
    - Tự động ước lượng tần số lấy mẫu thực tế $F_s$ từ nhãn thời gian `t_ms` / `host_s`.
    - Chuyển đổi linh hoạt trục hoành: **Thời gian (Giây)** hoặc **Số mẫu (Samples)**.
    - Phân tích phổ Fourier (FFT) với các dải sinh lý học được tô màu trực quan (Baseline drift, Nhịp thở 0.1–0.5 Hz, Sóng hài).
@@ -85,7 +85,7 @@ host_s, t_ms, Va, Vb, Va0, Vb0, Vbias, r, Vbat, flags, rr
 - `Va`, `Vb`: Điện áp đọc được từ hai photodiode (mV).
 - `Va0`, `Vb0`: Mẫu tối (khi laser tắt).
 - `Vbias`: Điện áp phân cực tham chiếu (mV).
-- `r`: Tỉ số vị trí chuẩn hóa $r = \frac{Va - k \cdot Vb}{Va + k \cdot Vb}$ (tín hiệu nhịp thở chính).
+- `r`: Tỉ số vị trí chuẩn hóa $r = \frac{k \cdot Vb - Va}{Va + k \cdot Vb}$ (tín hiệu nhịp thở chính). Chiều: **hít vào → r tăng, thở ra → r giảm** (dấu đã đảo so với công thức gốc vì thực đo Vb > Va).
 - `Vbat`: Điện áp pin (mV).
 - `flags`: Cờ trạng thái lỗi (bit0: lỗi ADS, bit1: bão hòa, bit2: Vbias mặc định, bit3: pin yếu).
 - `rr`: Nhịp thở ước lượng (lần/phút).
